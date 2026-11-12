@@ -7,7 +7,7 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 import streamlit as st
 
 st.set_page_config(
-    page_title="AI Crypto OKX Live ($100)", layout="wide", page_icon="₿"
+    page_title="AI Crypto Live ($100)", layout="wide", page_icon="₿"
 )
 
 st.markdown(
@@ -20,12 +20,12 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("₿ Bot AI Giao Dịch Crypto Chuẩn Giá OKX (Vốn Demo $100)")
+st.title("₿ Bot AI Giao Dịch Crypto Real-Time 24/7 (Vốn Demo $100)")
 ACC_FILE = "crypto_demo_account.json"
-ALL_COINS = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
-ALL_TFS = ["5m", "15m", "30m", "1H"]
-OKX_API_URL = "https://okx.com"
-HEADERS = {"User-Agent": "Mozilla/5.0"}
+ALL_COINS = ["BTC/USD", "ETH/USD", "SOL/USD"]
+PAIR_MAP = {"BTC/USD": "XBTUSD", "ETH/USD": "ETHUSD", "SOL/USD": "SOLUSD"}
+ALL_TFS = ["5m", "15m", "1h"]
+KRAKEN_URL = "https://kraken.com"
 
 
 def load_acc():
@@ -52,13 +52,13 @@ def save_acc(acc):
 
 
 with st.sidebar:
-  st.header("🤖 Bảng Điều Khiển OKX")
+  st.header("🤖 Bảng Điều Khiển Crypto")
   auto_trade = st.toggle("🟢 BẬT TỰ ĐỘNG QUÉT & VÀO LỆNH", True)
   scan_coins = st.multiselect(
       "Các đồng Coin cho phép săn lệnh:", ALL_COINS, default=ALL_COINS
   )
   scan_tfs = st.multiselect(
-      "Các khung thời gian quét:", ALL_TFS, default=["15m", "30m", "1H"]
+      "Các khung thời gian quét:", ALL_TFS, default=ALL_TFS
   )
   chart_coin = st.selectbox("Coin hiển thị biểu đồ:", ALL_COINS, index=0)
   chart_tf = st.selectbox("Khung biểu đồ:", ALL_TFS, index=1)
@@ -73,32 +73,30 @@ with st.sidebar:
     st.rerun()
 
 
-def fetch_okx_candles(inst_id, bar, limit=300):
+def fetch_kraken_candles(symbol, tf):
+  int_map = {"5m": 5, "15m": 15, "1h": 60}
+  pair = PAIR_MAP[symbol]
   res = requests.get(
-      f"{OKX_API_URL}/candles",
-      params={"instId": inst_id, "bar": bar, "limit": limit},
-      headers=HEADERS,
+      f"{KRAKEN_URL}/OHLC",
+      params={"pair": pair, "interval": int_map[tf]},
       timeout=5,
   ).json()
-  # OKX trả về dữ liệu mới nhất trước nên cần đảo ngược [::-1]
-  raw_data = res["data"][::-1]
-  cols = ["ts", "open", "high", "low", "close", "vol", "volCcy", "volCcyQuote", "confirm"]
+  result_key = [k for k in res["result"].keys() if k != "last"]
+  raw_data = res["result"][result_key]
+  cols = ["ts", "open", "high", "low", "close", "vwap", "volume", "count"]
   df = pd.DataFrame(raw_data, columns=cols)[
-      ["ts", "open", "high", "low", "close", "vol"]
+      ["ts", "open", "high", "low", "close", "volume"]
   ]
-  df.rename(columns={"vol": "volume"}, inplace=True)
   for c in ["open", "high", "low", "close", "volume"]:
     df[c] = df[c].astype(float)
-  df["ts"] = pd.to_datetime(df["ts"].astype(np.int64), unit="ms") + pd.Timedelta(
-      hours=7
-  )
+  df["ts"] = pd.to_datetime(df["ts"], unit="s") + pd.Timedelta(hours=7)
   df.set_index("ts", inplace=True)
   return df[~df.index.duplicated(keep="last")]
 
 
 @st.cache_data(ttl=60)
 def analyze_crypto(symbol, tf):
-  o1h = fetch_okx_candles(symbol, "1H", limit=100)
+  o1h = fetch_kraken_candles(symbol, "1h")
   macro = (
       "UP"
       if float(o1h["close"].iloc[-1])
@@ -106,8 +104,8 @@ def analyze_crypto(symbol, tf):
       else "DOWN"
   )
 
-  tg_map = {"5m": 0.0020, "15m": 0.0035, "30m": 0.0050, "1H": 0.0070}
-  df = fetch_okx_candles(symbol, tf, limit=300)
+  tg_map = {"5m": 0.0020, "15m": 0.0035, "1h": 0.0070}
+  df = fetch_kraken_candles(symbol, tf)
   df["hr"] = df.index.hour
 
   df["HA_c"] = (df["open"] + df["high"] + df["low"] + df["close"]) / 4
@@ -199,18 +197,18 @@ def analyze_crypto(symbol, tf):
   rec = df.iloc[-80:].copy()
   probs = model.predict_proba(rec[feats])
   return rec, probs[-1], macro
-def get_okx_live_prices():
+def get_kraken_live_prices():
   prices = {}
   try:
+    pairs_str = ",".join(PAIR_MAP.values())
     res = requests.get(
-        f"{OKX_API_URL}/tickers",
-        params={"instType": "SPOT"},
-        headers=HEADERS,
-        timeout=3,
+        f"{KRAKEN_URL}/Ticker", params={"pair": pairs_str}, timeout=3
     ).json()
-    for item in res.get("data", []):
-      if item["instId"] in ALL_COINS:
-        prices[item["instId"]] = float(item["last"])
+    res_data = res["result"]
+    for sym, k_pair in PAIR_MAP.items():
+      for k_key, val in res_data.items():
+        if k_pair[:3] in k_key:
+          prices[sym] = float(val["c"])
   except Exception:
     pass
 
@@ -223,9 +221,9 @@ def get_okx_live_prices():
 @st.fragment(run_every=1)
 def live_crypto_panel():
   acc = load_acc()
-  live_prices = get_okx_live_prices()
-  if live_prices.get("BTC-USDT", 0.0) == 0.0:
-    st.warning("Đang kết nối dữ liệu trực tiếp từ sàn OKX...")
+  live_prices = get_kraken_live_prices()
+  if live_prices.get("BTC/USD", 0.0) == 0.0:
+    st.warning("Đang kết nối dữ liệu thị trường...")
     return
 
   now_s = datetime.now().strftime("%H:%M:%S")
@@ -352,19 +350,19 @@ def live_crypto_panel():
   eq = acc["bal"] + fpnl
   c1, c2, c3, c4, c5 = st.columns(5)
   c1.metric(
-      f"₿ OKX BTC ({now_s})",
-      f"${live_prices['BTC-USDT']:,.2f}",
-      f"{deltas['BTC-USDT']:+.2f}$",
+      f"₿ LIVE BTC ({now_s})",
+      f"${live_prices['BTC/USD']:,.2f}",
+      f"{deltas['BTC/USD']:+.2f}$",
   )
   c2.metric(
-      "Ξ ETH-USDT",
-      f"${live_prices['ETH-USDT']:,.2f}",
-      f"{deltas['ETH-USDT']:+.2f}$",
+      "Ξ ETH/USD",
+      f"${live_prices['ETH/USD']:,.2f}",
+      f"{deltas['ETH/USD']:+.2f}$",
   )
   c3.metric(
-      "◎ SOL-USDT",
-      f"${live_prices['SOL-USDT']:,.2f}",
-      f"{deltas['SOL-USDT']:+.2f}$",
+      "◎ SOL/USD",
+      f"${live_prices['SOL/USD']:,.2f}",
+      f"{deltas['SOL/USD']:+.2f}$",
   )
   c4.metric(
       "🏦 Tài sản ($100)",
@@ -379,7 +377,7 @@ def live_crypto_panel():
         f"🔥 {best_keo['coin']} ({best_keo['tf']}): {'LONG' if best_keo['sig']==1 else 'SHORT'} ({best_keo['conf']:.1f}%)"
     )
   else:
-    c5.warning("📡 OKX LIVE 1s...")
+    c5.warning("📡 LIVE SCAN 1s...")
 
   if pos:
     p1, p2, p3, p4, p5 = st.columns(5)
@@ -412,7 +410,7 @@ def live_crypto_panel():
 
   if scan_list:
     st.caption(
-        "📡 **Radar quét Crypto đa khung thời gian (Dữ liệu trực tiếp OKX):**"
+        "📡 **Radar quét Crypto đa khung thời gian (Dữ liệu trực tiếp sàn Mỹ):**"
     )
     st.dataframe(
         pd.DataFrame(scan_list), use_container_width=True, hide_index=True
@@ -469,7 +467,7 @@ def chart_panel():
       height=420,
       xaxis_rangeslider_visible=False,
       template="plotly_dark",
-      title=f"₿ Biểu Đồ OKX {d_coin} - Khung {d_tf}",
+      title=f"₿ Biểu Đồ {d_coin} - Khung {d_tf}",
   )
   st.plotly_chart(fig, use_container_width=True)
 
