@@ -2,9 +2,9 @@ from datetime import datetime
 import json, os
 import numpy as np, pandas as pd
 import plotly.graph_objects as go
-import requests
 from sklearn.ensemble import HistGradientBoostingClassifier
 import streamlit as st
+import yfinance as yf
 
 st.set_page_config(
     page_title="AI Crypto Live ($100)", layout="wide", page_icon="₿"
@@ -20,11 +20,10 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("₿ Bot AI Giao Dịch Crypto Real-Time (Vốn Demo $100)")
+st.title("₿ Bot AI Giao Dịch Crypto Real-Time 24/7 (Vốn Demo $100)")
 ACC_FILE = "crypto_demo_account.json"
 ALL_COINS = ["BTC-USD", "ETH-USD", "SOL-USD"]
 ALL_TFS = ["5m", "15m", "1h"]
-COINBASE_URL = "https://coinbase.com"
 
 
 def load_acc():
@@ -72,28 +71,22 @@ with st.sidebar:
     st.rerun()
 
 
-def fetch_coinbase_candles(product_id, tf):
-  headers={"User-Agent": "Mozilla/5.0"}
-  gran_map = {"5m": 300, "15m": 900, "1h": 3600}
-  res = requests.get(
-      f"{COINBASE_URL}/products/{product_id}/candles",
-      params={"granularity": gran_map[tf]},
-      timeout=5,
-  ).json()
-  # Coinbase trả về thứ tự từ mới đến cũ nên cần đảo ngược lại [::-1]
-  df = pd.DataFrame(
-      res[::-1], columns=["ts", "low", "high", "open", "close", "volume"]
-  )
-  for c in ["open", "high", "low", "close", "volume"]:
-    df[c] = df[c].astype(float)
-  df["ts"] = pd.to_datetime(df["ts"], unit="s") + pd.Timedelta(hours=7)
-  df.set_index("ts", inplace=True)
-  return df[~df.index.duplicated(keep="last")]
+def clean_yf_df(raw_df):
+  if isinstance(raw_df.columns, pd.MultiIndex):
+    raw_df.columns = raw_df.columns.get_level_values(0)
+  df = raw_df[["Open", "High", "Low", "Close", "Volume"]].copy()
+  df.columns = ["open", "high", "low", "close", "volume"]
+  if df.index.tz is not None:
+    df.index = df.index.tz_convert("Asia/Ho_Chi_Minh").tz_localize(None)
+  else:
+    df.index = df.index + pd.Timedelta(hours=7)
+  return df[~df.index.duplicated(keep="last")].dropna()
 
 
 @st.cache_data(ttl=60)
 def analyze_crypto(symbol, tf):
-  o1h = fetch_coinbase_candles(symbol, "1h")
+  raw_1h = yf.download(symbol, period="15d", interval="1h", progress=False)
+  o1h = clean_yf_df(raw_1h)
   macro = (
       "UP"
       if float(o1h["close"].iloc[-1])
@@ -101,8 +94,10 @@ def analyze_crypto(symbol, tf):
       else "DOWN"
   )
 
+  period_map = {"5m": "15d", "15m": "30d", "1h": "180d"}
   tg_map = {"5m": 0.0020, "15m": 0.0035, "1h": 0.0070}
-  df = fetch_coinbase_candles(symbol, tf)
+  raw = yf.download(symbol, period=period_map[tf], interval=tf, progress=False)
+  df = clean_yf_df(raw)
   df["hr"] = df.index.hour
 
   df["HA_c"] = (df["open"] + df["high"] + df["low"] + df["close"]) / 4
@@ -194,16 +189,13 @@ def analyze_crypto(symbol, tf):
   rec = df.iloc[-80:].copy()
   probs = model.predict_proba(rec[feats])
   return rec, probs[-1], macro
-def get_coinbase_live_prices():
+def get_yf_live_prices():
   prices = {}
   for c in ALL_COINS:
     try:
-      res = requests.get(
-          f"{COINBASE_URL}/products/{c}/ticker", timeout=2
-      ).json()
-      prices[c] = float(res["price"])
+      info = yf.Ticker(c).fast_info
+      prices[c] = round(float(info["last_price"]), 2)
     except Exception:
-      # Giữ lại giá gần nhất nếu mạng chập chờn để không bao giờ báo lỗi đỏ
       prices[c] = st.session_state.get("prev_prices", {}).get(c, 0.0)
   return prices
 
@@ -211,9 +203,9 @@ def get_coinbase_live_prices():
 @st.fragment(run_every=2)
 def live_crypto_panel():
   acc = load_acc()
-  live_prices = get_coinbase_live_prices()
+  live_prices = get_yf_live_prices()
   if live_prices["BTC-USD"] == 0.0:
-    st.warning("Đang kết nối lại dữ liệu sàn...")
+    st.warning("Đang tải dữ liệu thị trường...")
     return
 
   now_s = datetime.now().strftime("%H:%M:%S")
@@ -399,9 +391,7 @@ def live_crypto_panel():
       st.rerun()
 
   if scan_list:
-    st.caption(
-        "📡 **Radar quét Crypto đa khung thời gian (Sàn Coinbase Mỹ):**"
-    )
+    st.caption("📡 **Radar quét Crypto đa khung thời gian (Yahoo Finance):**")
     st.dataframe(
         pd.DataFrame(scan_list), use_container_width=True, hide_index=True
     )
@@ -457,7 +447,7 @@ def chart_panel():
       height=420,
       xaxis_rangeslider_visible=False,
       template="plotly_dark",
-      title=f"₿ Biểu Đồ Coinbase {d_coin} - Khung {d_tf}",
+      title=f"₿ Biểu Đồ {d_coin} - Khung {d_tf}",
   )
   st.plotly_chart(fig, use_container_width=True)
 
