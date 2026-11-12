@@ -2,12 +2,12 @@ from datetime import datetime
 import json, os
 import numpy as np, pandas as pd
 import plotly.graph_objects as go
-import requests
 from sklearn.ensemble import HistGradientBoostingClassifier
 import streamlit as st
+import yfinance as yf
 
 st.set_page_config(
-    page_title="AI Crypto Live ($100)", layout="wide", page_icon="₿"
+    page_title="AI Crypto USDT Live ($100)", layout="wide", page_icon="₿"
 )
 
 st.markdown(
@@ -20,12 +20,11 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("₿ Bot AI Giao Dịch Crypto Real-Time 24/7 (Vốn Demo $100)")
+st.title("₿ Bot AI Giao Dịch Crypto Chuẩn Giá USDT (Vốn Demo $100)")
 ACC_FILE = "crypto_demo_account.json"
-ALL_COINS = ["BTC/USD", "ETH/USD", "SOL/USD"]
-PAIR_MAP = {"BTC/USD": "XBTUSD", "ETH/USD": "ETHUSD", "SOL/USD": "SOLUSD"}
+ALL_COINS = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
+YF_MAP = {"BTC/USDT": "BTC-USD", "ETH/USDT": "ETH-USD", "SOL/USDT": "SOL-USD"}
 ALL_TFS = ["5m", "15m", "1h"]
-KRAKEN_URL = "https://kraken.com"
 
 
 def load_acc():
@@ -73,30 +72,36 @@ with st.sidebar:
     st.rerun()
 
 
-def fetch_kraken_candles(symbol, tf):
-  int_map = {"5m": 5, "15m": 15, "1h": 60}
-  pair = PAIR_MAP[symbol]
-  res = requests.get(
-      f"{KRAKEN_URL}/OHLC",
-      params={"pair": pair, "interval": int_map[tf]},
-      timeout=5,
-  ).json()
-  result_key = [k for k in res["result"].keys() if k != "last"]
-  raw_data = res["result"][result_key]
-  cols = ["ts", "open", "high", "low", "close", "vwap", "volume", "count"]
-  df = pd.DataFrame(raw_data, columns=cols)[
-      ["ts", "open", "high", "low", "close", "volume"]
-  ]
-  for c in ["open", "high", "low", "close", "volume"]:
-    df[c] = df[c].astype(float)
-  df["ts"] = pd.to_datetime(df["ts"], unit="s") + pd.Timedelta(hours=7)
-  df.set_index("ts", inplace=True)
-  return df[~df.index.duplicated(keep="last")]
+def clean_yf_df(raw_df, usdt_rate=1.0):
+  if isinstance(raw_df.columns, pd.MultiIndex):
+    raw_df.columns = raw_df.columns.get_level_values(0)
+  df = raw_df[["Open", "High", "Low", "Close", "Volume"]].copy()
+  df.columns = ["open", "high", "low", "close", "volume"]
+  for col in ["open", "high", "low", "close"]:
+    df[col] = df[col] / usdt_rate
+  if df.index.tz is not None:
+    df.index = df.index.tz_convert("Asia/Ho_Chi_Minh").tz_localize(None)
+  else:
+    df.index = df.index + pd.Timedelta(hours=7)
+  return df[~df.index.duplicated(keep="last")].dropna()
+
+
+@st.cache_data(ttl=60)
+def get_usdt_rate():
+  try:
+    rate = float(yf.Ticker("USDT-USD").fast_info["last_price"])
+    return rate if 0.95 < rate < 1.05 else 1.0
+  except Exception:
+    return 1.0
 
 
 @st.cache_data(ttl=60)
 def analyze_crypto(symbol, tf):
-  o1h = fetch_kraken_candles(symbol, "1h")
+  yf_sym = YF_MAP[symbol]
+  usdt_rate = get_usdt_rate()
+
+  raw_1h = yf.download(yf_sym, period="15d", interval="1h", progress=False)
+  o1h = clean_yf_df(raw_1h, usdt_rate)
   macro = (
       "UP"
       if float(o1h["close"].iloc[-1])
@@ -104,8 +109,10 @@ def analyze_crypto(symbol, tf):
       else "DOWN"
   )
 
+  period_map = {"5m": "15d", "15m": "30d", "1h": "180d"}
   tg_map = {"5m": 0.0020, "15m": 0.0035, "1h": 0.0070}
-  df = fetch_kraken_candles(symbol, tf)
+  raw = yf.download(yf_sym, period=period_map[tf], interval=tf, progress=False)
+  df = clean_yf_df(raw, usdt_rate)
   df["hr"] = df.index.hour
 
   df["HA_c"] = (df["open"] + df["high"] + df["low"] + df["close"]) / 4
@@ -197,33 +204,25 @@ def analyze_crypto(symbol, tf):
   rec = df.iloc[-80:].copy()
   probs = model.predict_proba(rec[feats])
   return rec, probs[-1], macro
-def get_kraken_live_prices():
+def get_yf_usdt_live_prices():
   prices = {}
-  try:
-    pairs_str = ",".join(PAIR_MAP.values())
-    res = requests.get(
-        f"{KRAKEN_URL}/Ticker", params={"pair": pairs_str}, timeout=3
-    ).json()
-    res_data = res["result"]
-    for sym, k_pair in PAIR_MAP.items():
-      for k_key, val in res_data.items():
-        if k_pair[:3] in k_key:
-          prices[sym] = float(val["c"])
-  except Exception:
-    pass
-
-  for c in ALL_COINS:
-    if c not in prices:
+  usdt_rate = get_usdt_rate()
+  for c, yf_sym in YF_MAP.items():
+    try:
+      info = yf.Ticker(yf_sym).fast_info
+      usd_price = float(info["last_price"])
+      prices[c] = round(usd_price / usdt_rate, 2)
+    except Exception:
       prices[c] = st.session_state.get("prev_prices", {}).get(c, 0.0)
   return prices
 
 
-@st.fragment(run_every=1)
+@st.fragment(run_every=2)
 def live_crypto_panel():
   acc = load_acc()
-  live_prices = get_kraken_live_prices()
-  if live_prices.get("BTC/USD", 0.0) == 0.0:
-    st.warning("Đang kết nối dữ liệu thị trường...")
+  live_prices = get_yf_usdt_live_prices()
+  if live_prices["BTC/USDT"] == 0.0:
+    st.warning("Đang tải dữ liệu thị trường USDT...")
     return
 
   now_s = datetime.now().strftime("%H:%M:%S")
@@ -306,9 +305,9 @@ def live_crypto_panel():
               "Coin": pos["coin"],
               "Khung": pos["tf"],
               "Lệnh": pos["type"],
-              "Vào": f"${pos['entry']:,.2f}",
-              "Đóng": f"${c_price:,.2f}",
-              "Lãi/Lỗ ($)": round(fpnl, 2),
+              "Vào": f"{pos['entry']:,.2f}",
+              "Đóng": f"{c_price:,.2f}",
+              "Lãi/Lỗ (USDT)": round(fpnl, 2),
               "Lý do": reason,
               "Giờ": now_s,
           },
@@ -350,24 +349,24 @@ def live_crypto_panel():
   eq = acc["bal"] + fpnl
   c1, c2, c3, c4, c5 = st.columns(5)
   c1.metric(
-      f"₿ LIVE BTC ({now_s})",
-      f"${live_prices['BTC/USD']:,.2f}",
-      f"{deltas['BTC/USD']:+.2f}$",
+      f"₿ BTC/USDT ({now_s})",
+      f"{live_prices['BTC/USDT']:,.2f}",
+      f"{deltas['BTC/USDT']:+.2f}",
   )
   c2.metric(
-      "Ξ ETH/USD",
-      f"${live_prices['ETH/USD']:,.2f}",
-      f"{deltas['ETH/USD']:+.2f}$",
+      "Ξ ETH/USDT",
+      f"{live_prices['ETH/USDT']:,.2f}",
+      f"{deltas['ETH/USDT']:+.2f}",
   )
   c3.metric(
-      "◎ SOL/USD",
-      f"${live_prices['SOL/USD']:,.2f}",
-      f"{deltas['SOL/USD']:+.2f}$",
+      "◎ SOL/USDT",
+      f"{live_prices['SOL/USDT']:,.2f}",
+      f"{deltas['SOL/USDT']:+.2f}",
   )
   c4.metric(
       "🏦 Tài sản ($100)",
-      f"${eq:,.2f}",
-      f"{eq - acc['init']:+,.2f} USD",
+      f"{eq:,.2f} USDT",
+      f"{eq - acc['init']:+,.2f}",
   )
 
   if locked:
@@ -377,17 +376,17 @@ def live_crypto_panel():
         f"🔥 {best_keo['coin']} ({best_keo['tf']}): {'LONG' if best_keo['sig']==1 else 'SHORT'} ({best_keo['conf']:.1f}%)"
     )
   else:
-    c5.warning("📡 LIVE SCAN 1s...")
+    c5.warning("📡 LIVE SCAN USDT...")
 
   if pos:
     p1, p2, p3, p4, p5 = st.columns(5)
     p1.info(
         f"**{pos['type']} {pos['coin']} ({pos['tf']})** | Rủi ro"
-        f" ${pos['risk']:.2f}"
+        f" {pos['risk']:.2f} USDT"
     )
-    p2.write(f"Vào: **${pos['entry']:,.2f}**")
-    p3.write(f"TP: **${pos['tp']:,.2f}** | SL: **${pos['sl']:,.2f}**")
-    p4.metric("Lãi/Lỗ Live", f"{fpnl:+,.2f} USD")
+    p2.write(f"Vào: **{pos['entry']:,.2f}**")
+    p3.write(f"TP: **{pos['tp']:,.2f}** | SL: **{pos['sl']:,.2f}**")
+    p4.metric("Lãi/Lỗ Live", f"{fpnl:+,.2f} USDT")
     if p5.button("❌ Chốt tay ngay", use_container_width=True):
       c_price = live_prices[pos["coin"]]
       acc["bal"] = max(0.0, acc["bal"] + fpnl)
@@ -397,9 +396,9 @@ def live_crypto_panel():
               "Coin": pos["coin"],
               "Khung": pos["tf"],
               "Lệnh": pos["type"],
-              "Vào": f"${pos['entry']:,.2f}",
-              "Đóng": f"${c_price:,.2f}",
-              "Lãi/Lỗ ($)": round(fpnl, 2),
+              "Vào": f"{pos['entry']:,.2f}",
+              "Đóng": f"{c_price:,.2f}",
+              "Lãi/Lỗ (USDT)": round(fpnl, 2),
               "Lý do": "Chốt tay 🖱️",
               "Giờ": now_s,
           },
@@ -410,7 +409,7 @@ def live_crypto_panel():
 
   if scan_list:
     st.caption(
-        "📡 **Radar quét Crypto đa khung thời gian (Dữ liệu trực tiếp sàn Mỹ):**"
+        "📡 **Radar quét Crypto đa khung thời gian (Quy đổi chuẩn tỷ giá USDT):**"
     )
     st.dataframe(
         pd.DataFrame(scan_list), use_container_width=True, hide_index=True
@@ -418,7 +417,7 @@ def live_crypto_panel():
 
   if acc["hist"]:
     hdf = pd.DataFrame(acc["hist"])
-    wr = (len(hdf[hdf["Lãi/Lỗ ($)"] > 0]) / len(hdf)) * 100
+    wr = (len(hdf[hdf["Lãi/Lỗ (USDT)"] > 0]) / len(hdf)) * 100
     st.write(
         f"**Nhật ký giao dịch Crypto ({len(hdf)} lệnh) | Winrate: {wr:.1f}%**"
     )
