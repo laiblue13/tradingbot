@@ -1,13 +1,13 @@
 from datetime import datetime
 import json, os
-import ccxt
 import numpy as np, pandas as pd
 import plotly.graph_objects as go
+import requests
 from sklearn.ensemble import HistGradientBoostingClassifier
 import streamlit as st
 
 st.set_page_config(
-    page_title="AI Crypto Pro Bot ($100)", layout="wide", page_icon="₿"
+    page_title="AI Crypto Binance Live ($100)", layout="wide", page_icon="₿"
 )
 
 st.markdown(
@@ -20,10 +20,11 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("₿ Bot AI Giao Dịch Crypto Tự Động 24/7 (Vốn Demo $100)")
+st.title("₿ Bot AI Giao Dịch Crypto Real-Time 1s (Vốn Demo $100)")
 ACC_FILE = "crypto_demo_account.json"
-ALL_COINS = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
+ALL_COINS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 ALL_TFS = ["5m", "15m", "30m", "1h"]
+BINANCE_DATA_URL = "https://binance.vision"
 
 
 def load_acc():
@@ -71,27 +72,48 @@ with st.sidebar:
     st.rerun()
 
 
+def fetch_binance_klines(symbol, interval, limit=300):
+  res = requests.get(
+      f"{BINANCE_DATA_URL}/klines",
+      params={"symbol": symbol, "interval": interval, "limit": limit},
+      timeout=5,
+  ).json()
+  cols = [
+      "ts",
+      "open",
+      "high",
+      "low",
+      "close",
+      "volume",
+      "ct",
+      "qv",
+      "nt",
+      "tb",
+      "tq",
+      "ig",
+  ]
+  df = pd.DataFrame(res, columns=cols)[
+      ["ts", "open", "high", "low", "close", "volume"]
+  ]
+  for c in ["open", "high", "low", "close", "volume"]:
+    df[c] = df[c].astype(float)
+  df["ts"] = pd.to_datetime(df["ts"], unit="ms") + pd.Timedelta(hours=7)
+  df.set_index("ts", inplace=True)
+  return df
+
+
 @st.cache_data(ttl=60)
 def analyze_crypto(symbol, tf):
-  ex = ccxt.okx({"enableRateLimit": True})
-  o1h = pd.DataFrame(
-      ex.fetch_ohlcv(symbol, "1h", limit=100),
-      columns=["t", "o", "h", "l", "c", "v"],
-  )
+  o1h = fetch_binance_klines(symbol, "1h", limit=100)
   macro = (
       "UP"
-      if float(o1h["c"].iloc[-1])
-      > float(o1h["c"].ewm(span=50, adjust=False).mean().iloc[-1])
+      if float(o1h["close"].iloc[-1])
+      > float(o1h["close"].ewm(span=50, adjust=False).mean().iloc[-1])
       else "DOWN"
   )
 
   tg_map = {"5m": 0.0020, "15m": 0.0035, "30m": 0.0050, "1h": 0.0070}
-  raw = ex.fetch_ohlcv(symbol, tf, limit=300)
-  df = pd.DataFrame(
-      raw, columns=["ts", "open", "high", "low", "close", "volume"]
-  )
-  df["ts"] = pd.to_datetime(df["ts"], unit="ms") + pd.Timedelta(hours=7)
-  df.set_index("ts", inplace=True)
+  df = fetch_binance_klines(symbol, tf, limit=400)
   df["hr"] = df.index.hour
 
   df["HA_c"] = (df["open"] + df["high"] + df["low"] + df["close"]) / 4
@@ -183,13 +205,27 @@ def analyze_crypto(symbol, tf):
   rec = df.iloc[-80:].copy()
   probs = model.predict_proba(rec[feats])
   return rec, probs[-1], macro
-@st.fragment(run_every=2)
+def get_binance_live_prices():
+  symbols_param = json.dumps(ALL_COINS, separators=(",", ":"))
+  res = requests.get(
+      f"{BINANCE_DATA_URL}/ticker/price",
+      params={"symbols": symbols_param},
+      timeout=2,
+  ).json()
+  return {item["symbol"]: float(item["price"]) for item in res}
+
+
+@st.fragment(run_every=1)
 def live_crypto_panel():
   acc = load_acc()
-  ex = ccxt.okx({"enableRateLimit": True})
-  tickers = ex.fetch_tickers(ALL_COINS)
-  live_prices = {c: float(tickers[c]["last"]) for c in ALL_COINS}
+  live_prices = get_binance_live_prices()
   now_s = datetime.now().strftime("%H:%M:%S")
+
+  if "prev_prices" not in st.session_state:
+    st.session_state["prev_prices"] = live_prices.copy()
+  prev_prices = st.session_state["prev_prices"]
+  deltas = {c: live_prices[c] - prev_prices[c] for c in ALL_COINS}
+  st.session_state["prev_prices"] = live_prices.copy()
 
   scan_list = []
   best_keo = None
@@ -306,16 +342,25 @@ def live_crypto_panel():
 
   eq = acc["bal"] + fpnl
   c1, c2, c3, c4, c5 = st.columns(5)
-  c1.metric(f"₿ BTC ({now_s})", f"${live_prices['BTC/USDT']:,.1f}")
-  c2.metric(
-      "Ξ ETH / ◎ SOL",
-      f"${live_prices['ETH/USDT']:,.1f} | ${live_prices['SOL/USDT']:,.1f}",
+  c1.metric(
+      f"₿ BTC ({now_s})",
+      f"${live_prices['BTCUSDT']:,.2f}",
+      f"{deltas['BTCUSDT']:+.2f}$",
   )
-  c3.metric("💰 Vốn khả dụng", f"${acc['bal']:,.2f}")
+  c2.metric(
+      "Ξ ETHUSDT",
+      f"${live_prices['ETHUSDT']:,.2f}",
+      f"{deltas['ETHUSDT']:+.2f}$",
+  )
+  c3.metric(
+      "◎ SOLUSDT",
+      f"${live_prices['SOLUSDT']:,.2f}",
+      f"{deltas['SOLUSDT']:+.2f}$",
+  )
   c4.metric(
-      "🏦 Tổng tài sản",
+      "🏦 Tài sản ($100)",
       f"${eq:,.2f}",
-      f"{eq - acc['init']:+,.2f} USD (Ngày: {day_pnl:+,.2f}$)",
+      f"{eq - acc['init']:+,.2f} USD",
   )
 
   if locked:
@@ -325,7 +370,7 @@ def live_crypto_panel():
         f"🔥 {best_keo['coin']} ({best_keo['tf']}): {'LONG' if best_keo['sig']==1 else 'SHORT'} ({best_keo['conf']:.1f}%)"
     )
   else:
-    c5.warning("📡 ĐANG QUÉT CRYPTO...")
+    c5.warning("📡 LIVE SCAN 1s...")
 
   if pos:
     p1, p2, p3, p4, p5 = st.columns(5)
@@ -357,7 +402,9 @@ def live_crypto_panel():
       st.rerun()
 
   if scan_list:
-    st.caption("📡 **Radar quét Crypto đa khung thời gian (Sàn OKX):**")
+    st.caption(
+        "📡 **Radar quét Crypto đa khung thời gian (Dữ liệu Binance Spot):**"
+    )
     st.dataframe(
         pd.DataFrame(scan_list), use_container_width=True, hide_index=True
     )
@@ -413,7 +460,7 @@ def chart_panel():
       height=420,
       xaxis_rangeslider_visible=False,
       template="plotly_dark",
-      title=f"₿ Biểu Đồ {d_coin} - Khung {d_tf}",
+      title=f"₿ Biểu Đồ Binance {d_coin} - Khung {d_tf}",
   )
   st.plotly_chart(fig, use_container_width=True)
 
