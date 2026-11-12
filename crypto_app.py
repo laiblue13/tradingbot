@@ -73,6 +73,7 @@ with st.sidebar:
 
 
 def fetch_coinbase_candles(product_id, tf):
+  headers={"User-Agent": "Mozilla/5.0"}
   gran_map = {"5m": 300, "15m": 900, "1h": 3600}
   res = requests.get(
       f"{COINBASE_URL}/products/{product_id}/candles",
