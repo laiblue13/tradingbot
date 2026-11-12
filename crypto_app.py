@@ -73,7 +73,7 @@ with st.sidebar:
 
 @st.cache_data(ttl=60)
 def analyze_crypto(symbol, tf):
-  ex = ccxt.binance({"enableRateLimit": True})
+  ex = ccxt.okx({"enableRateLimit": True})
   o1h = pd.DataFrame(
       ex.fetch_ohlcv(symbol, "1h", limit=100),
       columns=["t", "o", "h", "l", "c", "v"],
@@ -86,7 +86,7 @@ def analyze_crypto(symbol, tf):
   )
 
   tg_map = {"5m": 0.0020, "15m": 0.0035, "30m": 0.0050, "1h": 0.0070}
-  raw = ex.fetch_ohlcv(symbol, tf, limit=1000)
+  raw = ex.fetch_ohlcv(symbol, tf, limit=300)
   df = pd.DataFrame(
       raw, columns=["ts", "open", "high", "low", "close", "volume"]
   )
@@ -186,13 +186,13 @@ def analyze_crypto(symbol, tf):
 @st.fragment(run_every=2)
 def live_crypto_panel():
   acc = load_acc()
-  ex = ccxt.binance({"enableRateLimit": True})
+  ex = ccxt.okx({"enableRateLimit": True})
   tickers = ex.fetch_tickers(ALL_COINS)
   live_prices = {c: float(tickers[c]["last"]) for c in ALL_COINS}
   now_s = datetime.now().strftime("%H:%M:%S")
 
   scan_list = []
-  best_kèo = None
+  best_keo = None
 
   for c in scan_coins:
     for t in scan_tfs:
@@ -220,8 +220,8 @@ def live_crypto_panel():
       })
 
       if (sig == 1 or sig == 2) and conf >= conf_th and ok_dir:
-        if best_kèo is None or conf > best_kèo["conf"]:
-          best_kèo = {
+        if best_keo is None or conf > best_keo["conf"]:
+          best_keo = {
               "coin": c,
               "tf": t,
               "sig": sig,
@@ -276,17 +276,23 @@ def live_crypto_panel():
   day_pnl = (acc["bal"] + fpnl) - acc["day_start"]
   locked = day_pnl <= -(acc["day_start"] * (max_loss_pct / 100.0))
 
-  if not pos and auto_trade and not locked and acc["bal"] >= 10.0 and best_kèo:
+  if not pos and auto_trade and not locked and acc["bal"] >= 10.0 and best_keo:
     risk_u = acc["bal"] * (risk_pct / 100.0)
-    sl_d = best_kèo["atr"] * 1.2
-    l_type = "LONG" if best_kèo["sig"] == 1 else "SHORT"
-    p_in = best_kèo["price"]
-    tp_p = round(p_in + sl_d * 2, 2) if l_type == "LONG" else round(p_in - sl_d * 2, 2)
-    sl_p = round(p_in - sl_d, 2) if l_type == "LONG" else round(p_in + sl_d, 2)
+    sl_d = best_keo["atr"] * 1.2
+    l_type = "LONG" if best_keo["sig"] == 1 else "SHORT"
+    p_in = best_keo["price"]
+    tp_p = (
+        round(p_in + sl_d * 2, 2)
+        if l_type == "LONG"
+        else round(p_in - sl_d * 2, 2)
+    )
+    sl_p = (
+        round(p_in - sl_d, 2) if l_type == "LONG" else round(p_in + sl_d, 2)
+    )
 
     acc["pos"] = pos = {
-        "coin": best_kèo["coin"],
-        "tf": best_kèo["tf"],
+        "coin": best_keo["coin"],
+        "tf": best_keo["tf"],
         "type": l_type,
         "entry": p_in,
         "tp": tp_p,
@@ -301,7 +307,10 @@ def live_crypto_panel():
   eq = acc["bal"] + fpnl
   c1, c2, c3, c4, c5 = st.columns(5)
   c1.metric(f"₿ BTC ({now_s})", f"${live_prices['BTC/USDT']:,.1f}")
-  c2.metric("Ξ ETH / ◎ SOL", f"${live_prices['ETH/USDT']:,.1f} | ${live_prices['SOL/USDT']:,.1f}")
+  c2.metric(
+      "Ξ ETH / ◎ SOL",
+      f"${live_prices['ETH/USDT']:,.1f} | ${live_prices['SOL/USDT']:,.1f}",
+  )
   c3.metric("💰 Vốn khả dụng", f"${acc['bal']:,.2f}")
   c4.metric(
       "🏦 Tổng tài sản",
@@ -311,16 +320,19 @@ def live_crypto_panel():
 
   if locked:
     c5.error("🛑 KHÓA LỖ NGÀY")
-  elif best_kèo:
+  elif best_keo:
     c5.success(
-        f"🔥 {best_kèo['coin']} ({best_kèo['tf']}): {'LONG' if best_kèo['sig']==1 else 'SHORT'} ({best_kèo['conf']:.1f}%)"
+        f"🔥 {best_keo['coin']} ({best_keo['tf']}): {'LONG' if best_keo['sig']==1 else 'SHORT'} ({best_keo['conf']:.1f}%)"
     )
   else:
     c5.warning("📡 ĐANG QUÉT CRYPTO...")
 
   if pos:
     p1, p2, p3, p4, p5 = st.columns(5)
-    p1.info(f"**{pos['type']} {pos['coin']} ({pos['tf']})** | Rủi ro ${pos['risk']:.2f}")
+    p1.info(
+        f"**{pos['type']} {pos['coin']} ({pos['tf']})** | Rủi ro"
+        f" ${pos['risk']:.2f}"
+    )
     p2.write(f"Vào: **${pos['entry']:,.2f}**")
     p3.write(f"TP: **${pos['tp']:,.2f}** | SL: **${pos['sl']:,.2f}**")
     p4.metric("Lãi/Lỗ Live", f"{fpnl:+,.2f} USD")
@@ -345,13 +357,17 @@ def live_crypto_panel():
       st.rerun()
 
   if scan_list:
-    st.caption("📡 **Radar quét Crypto đa khung thời gian (Đánh thuận chiều):**")
-    st.dataframe(pd.DataFrame(scan_list), use_container_width=True, hide_index=True)
+    st.caption("📡 **Radar quét Crypto đa khung thời gian (Sàn OKX):**")
+    st.dataframe(
+        pd.DataFrame(scan_list), use_container_width=True, hide_index=True
+    )
 
   if acc["hist"]:
     hdf = pd.DataFrame(acc["hist"])
     wr = (len(hdf[hdf["Lãi/Lỗ ($)"] > 0]) / len(hdf)) * 100
-    st.write(f"**Nhật ký giao dịch Crypto ({len(hdf)} lệnh) | Winrate: {wr:.1f}%**")
+    st.write(
+        f"**Nhật ký giao dịch Crypto ({len(hdf)} lệnh) | Winrate: {wr:.1f}%**"
+    )
     st.dataframe(hdf, use_container_width=True, hide_index=True)
 
 
@@ -383,9 +399,15 @@ def chart_panel():
       )
   )
   if pos:
-    fig.add_hline(y=pos["entry"], line_color="white", annotation_text=f"ENTRY ({d_coin})")
-    fig.add_hline(y=pos["tp"], line_dash="dash", line_color="#00ff00", annotation_text="TP")
-    fig.add_hline(y=pos["sl"], line_dash="dash", line_color="#ff0000", annotation_text="SL")
+    fig.add_hline(
+        y=pos["entry"], line_color="white", annotation_text=f"ENTRY ({d_coin})"
+    )
+    fig.add_hline(
+        y=pos["tp"], line_dash="dash", line_color="#00ff00", annotation_text="TP"
+    )
+    fig.add_hline(
+        y=pos["sl"], line_dash="dash", line_color="#ff0000", annotation_text="SL"
+    )
 
   fig.update_layout(
       height=420,
