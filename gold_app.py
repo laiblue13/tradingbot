@@ -1,15 +1,14 @@
 from datetime import datetime
 import json, os
-from sklearn.ensemble import HistGradientBoostingClassifier
-
 import numpy as np, pandas as pd
 import plotly.graph_objects as go
 import requests
+from sklearn.ensemble import HistGradientBoostingClassifier
 import streamlit as st
 import yfinance as yf
 
 st.set_page_config(
-    page_title="AI Gold Reverse XAUUSD ($100)", layout="wide", page_icon="🥇"
+    page_title="AI Gold Spot XAUUSD ($100)", layout="wide", page_icon="🥇"
 )
 
 st.markdown(
@@ -22,7 +21,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("🥇 Bot AI Giao Dịch Vàng XAUUSD - Chế Độ Đánh Ngược (Vốn $100)")
+st.title("🥇 Bot AI Giao Dịch Vàng Giao Ngay XAUUSD (Vốn Demo $100)")
 ACC_FILE = "gold_demo_account.json"
 ALL_TFS = ["1m", "5m", "15m", "30m", "1h"]
 GOLD_TICKER = "GC=F"
@@ -54,12 +53,11 @@ def save_acc(acc):
 with st.sidebar:
   st.header("🤖 Bảng Điều Khiển XAUUSD")
   auto_trade = st.toggle("🟢 BẬT TỰ ĐỘNG QUÉT & VÀO LỆNH", True)
-  reverse_mode = st.toggle("🔄 ĐÁNH NGƯỢC AI (AI Buy -> Bot Sell)", True)
   scan_tfs = st.multiselect(
       "Các khung cho phép Bot săn lệnh:", ALL_TFS, default=ALL_TFS
   )
   chart_tf = st.selectbox("Khung biểu đồ hiển thị:", ALL_TFS, index=1)
-  mtf_filter = st.checkbox("Lọc sóng lớn (1H EMA 50)", False)
+  mtf_filter = st.checkbox("Lọc sóng lớn (1H EMA 50)", True)
   be_mode = st.checkbox("Dời SL hòa vốn khi lãi 1R", True)
   risk_pct = st.slider("Rủi ro mỗi lệnh (%):", 1.0, 5.0, 2.0, 0.5)
   max_loss_pct = st.slider("Khóa bot nếu lỗ ngày (%):", 3.0, 15.0, 6.0, 1.0)
@@ -194,13 +192,12 @@ def analyze_xau_tf(tf):
   ]
   sp = int(len(clean) * 0.8)
   model = HistGradientBoostingClassifier(
-        class_weight="balanced",
-        max_iter=150,
-        learning_rate=0.05,
-        max_depth=5,
-        random_state=42,
+      class_weight="balanced",
+      max_iter=150,
+      learning_rate=0.05,
+      max_depth=5,
+      random_state=42,
   )
-
   model.fit(clean[feats].iloc[:sp], clean["target"].iloc[:sp])
 
   rec = df.iloc[-80:].copy()
@@ -233,16 +230,8 @@ def live_xau_panel():
   for t in scan_tfs:
     rec, probs, macro = analyze_xau_tf(t)
     macro_trend = macro
-    raw_sig, conf = int(np.argmax(probs)), float(np.max(probs) * 100)
+    sig, conf = int(np.argmax(probs)), float(np.max(probs) * 100)
     atr_val = float(rec["ATR"].iloc[-1])
-
-    # Đảo ngược tín hiệu AI nếu bật chế độ Đánh Ngược
-    sig = raw_sig
-    if reverse_mode:
-      if raw_sig == 1:
-        sig = 2
-      elif raw_sig == 2:
-        sig = 1
 
     ok_dir = (
         (not mtf_filter)
@@ -251,17 +240,9 @@ def live_xau_panel():
     )
     status = "🟡 Chờ"
     if sig == 1 and conf >= conf_th:
-      status = (
-          ("🟢 BUY (Đảo)" if reverse_mode else "🟢 BUY")
-          if ok_dir
-          else "⚠️ Ngược 1H"
-      )
+      status = "🟢 BUY" if ok_dir else "⚠️ Ngược 1H"
     elif sig == 2 and conf >= conf_th:
-      status = (
-          ("🔴 SELL (Đảo)" if reverse_mode else "🔴 SELL")
-          if ok_dir
-          else "⚠️ Ngược 1H"
-      )
+      status = "🔴 SELL" if ok_dir else "⚠️ Ngược 1H"
 
     scan_results.append({
         "Khung": t,
