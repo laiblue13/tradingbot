@@ -193,7 +193,7 @@ def analyze_xau_tf(tf):
       "bear_e",
   ]
   sp = int(len(clean) * 0.8)
-      model = HistGradientBoostingClassifier(
+  model = HistGradientBoostingClassifier(
         class_weight="balanced",
         max_iter=150,
         learning_rate=0.05,
