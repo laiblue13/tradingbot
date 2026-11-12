@@ -1,6 +1,7 @@
 from datetime import datetime
 import json, os
-import lightgbm as lgb
+from sklearn.ensemble import HistGradientBoostingClassifier
+
 import numpy as np, pandas as pd
 import plotly.graph_objects as go
 import requests
@@ -192,16 +193,14 @@ def analyze_xau_tf(tf):
       "bear_e",
   ]
   sp = int(len(clean) * 0.8)
-  model = lgb.LGBMClassifier(
-      objective="multiclass",
-      num_class=3,
-      class_weight="balanced",
-      n_estimators=150,
-      learning_rate=0.05,
-      max_depth=5,
-      random_state=42,
-      verbose=-1,
+      model = HistGradientBoostingClassifier(
+        class_weight="balanced",
+        max_iter=150,
+        learning_rate=0.05,
+        max_depth=5,
+        random_state=42,
   )
+
   model.fit(clean[feats].iloc[:sp], clean["target"].iloc[:sp])
 
   rec = df.iloc[-80:].copy()
