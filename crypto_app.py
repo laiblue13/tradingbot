@@ -7,7 +7,7 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 import streamlit as st
 
 st.set_page_config(
-    page_title="AI Crypto Binance Live ($100)", layout="wide", page_icon="₿"
+    page_title="AI Crypto Live ($100)", layout="wide", page_icon="₿"
 )
 
 st.markdown(
@@ -20,11 +20,11 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("₿ Bot AI Giao Dịch Crypto Real-Time 1s (Vốn Demo $100)")
+st.title("₿ Bot AI Giao Dịch Crypto Real-Time (Vốn Demo $100)")
 ACC_FILE = "crypto_demo_account.json"
-ALL_COINS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
-ALL_TFS = ["5m", "15m", "30m", "1h"]
-BINANCE_DATA_URL = "https://binance.vision"
+ALL_COINS = ["BTC-USD", "ETH-USD", "SOL-USD"]
+ALL_TFS = ["5m", "15m", "1h"]
+COINBASE_URL = "https://coinbase.com"
 
 
 def load_acc():
@@ -57,7 +57,7 @@ with st.sidebar:
       "Các đồng Coin cho phép săn lệnh:", ALL_COINS, default=ALL_COINS
   )
   scan_tfs = st.multiselect(
-      "Các khung thời gian quét:", ALL_TFS, default=["15m", "30m", "1h"]
+      "Các khung thời gian quét:", ALL_TFS, default=ALL_TFS
   )
   chart_coin = st.selectbox("Coin hiển thị biểu đồ:", ALL_COINS, index=0)
   chart_tf = st.selectbox("Khung biểu đồ:", ALL_TFS, index=1)
@@ -72,39 +72,27 @@ with st.sidebar:
     st.rerun()
 
 
-def fetch_binance_klines(symbol, interval, limit=300):
+def fetch_coinbase_candles(product_id, tf):
+  gran_map = {"5m": 300, "15m": 900, "1h": 3600}
   res = requests.get(
-      f"{BINANCE_DATA_URL}/klines",
-      params={"symbol": symbol, "interval": interval, "limit": limit},
+      f"{COINBASE_URL}/products/{product_id}/candles",
+      params={"granularity": gran_map[tf]},
       timeout=5,
   ).json()
-  cols = [
-      "ts",
-      "open",
-      "high",
-      "low",
-      "close",
-      "volume",
-      "ct",
-      "qv",
-      "nt",
-      "tb",
-      "tq",
-      "ig",
-  ]
-  df = pd.DataFrame(res, columns=cols)[
-      ["ts", "open", "high", "low", "close", "volume"]
-  ]
+  # Coinbase trả về thứ tự từ mới đến cũ nên cần đảo ngược lại [::-1]
+  df = pd.DataFrame(
+      res[::-1], columns=["ts", "low", "high", "open", "close", "volume"]
+  )
   for c in ["open", "high", "low", "close", "volume"]:
     df[c] = df[c].astype(float)
-  df["ts"] = pd.to_datetime(df["ts"], unit="ms") + pd.Timedelta(hours=7)
+  df["ts"] = pd.to_datetime(df["ts"], unit="s") + pd.Timedelta(hours=7)
   df.set_index("ts", inplace=True)
-  return df
+  return df[~df.index.duplicated(keep="last")]
 
 
 @st.cache_data(ttl=60)
 def analyze_crypto(symbol, tf):
-  o1h = fetch_binance_klines(symbol, "1h", limit=100)
+  o1h = fetch_coinbase_candles(symbol, "1h")
   macro = (
       "UP"
       if float(o1h["close"].iloc[-1])
@@ -112,8 +100,8 @@ def analyze_crypto(symbol, tf):
       else "DOWN"
   )
 
-  tg_map = {"5m": 0.0020, "15m": 0.0035, "30m": 0.0050, "1h": 0.0070}
-  df = fetch_binance_klines(symbol, tf, limit=400)
+  tg_map = {"5m": 0.0020, "15m": 0.0035, "1h": 0.0070}
+  df = fetch_coinbase_candles(symbol, tf)
   df["hr"] = df.index.hour
 
   df["HA_c"] = (df["open"] + df["high"] + df["low"] + df["close"]) / 4
@@ -205,20 +193,28 @@ def analyze_crypto(symbol, tf):
   rec = df.iloc[-80:].copy()
   probs = model.predict_proba(rec[feats])
   return rec, probs[-1], macro
-def get_binance_live_prices():
-  symbols_param = json.dumps(ALL_COINS, separators=(",", ":"))
-  res = requests.get(
-      f"{BINANCE_DATA_URL}/ticker/price",
-      params={"symbols": symbols_param},
-      timeout=2,
-  ).json()
-  return {item["symbol"]: float(item["price"]) for item in res}
+def get_coinbase_live_prices():
+  prices = {}
+  for c in ALL_COINS:
+    try:
+      res = requests.get(
+          f"{COINBASE_URL}/products/{c}/ticker", timeout=2
+      ).json()
+      prices[c] = float(res["price"])
+    except Exception:
+      # Giữ lại giá gần nhất nếu mạng chập chờn để không bao giờ báo lỗi đỏ
+      prices[c] = st.session_state.get("prev_prices", {}).get(c, 0.0)
+  return prices
 
 
-@st.fragment(run_every=1)
+@st.fragment(run_every=2)
 def live_crypto_panel():
   acc = load_acc()
-  live_prices = get_binance_live_prices()
+  live_prices = get_coinbase_live_prices()
+  if live_prices["BTC-USD"] == 0.0:
+    st.warning("Đang kết nối lại dữ liệu sàn...")
+    return
+
   now_s = datetime.now().strftime("%H:%M:%S")
 
   if "prev_prices" not in st.session_state:
@@ -267,7 +263,7 @@ def live_crypto_panel():
           }
 
   pos, fpnl = acc["pos"], 0.0
-  if pos:
+  if pos and pos["coin"] in live_prices:
     c_price = live_prices[pos["coin"]]
     diff = (
         (c_price - pos["entry"])
@@ -344,18 +340,18 @@ def live_crypto_panel():
   c1, c2, c3, c4, c5 = st.columns(5)
   c1.metric(
       f"₿ BTC ({now_s})",
-      f"${live_prices['BTCUSDT']:,.2f}",
-      f"{deltas['BTCUSDT']:+.2f}$",
+      f"${live_prices['BTC-USD']:,.2f}",
+      f"{deltas['BTC-USD']:+.2f}$",
   )
   c2.metric(
-      "Ξ ETHUSDT",
-      f"${live_prices['ETHUSDT']:,.2f}",
-      f"{deltas['ETHUSDT']:+.2f}$",
+      "Ξ ETH-USD",
+      f"${live_prices['ETH-USD']:,.2f}",
+      f"{deltas['ETH-USD']:+.2f}$",
   )
   c3.metric(
-      "◎ SOLUSDT",
-      f"${live_prices['SOLUSDT']:,.2f}",
-      f"{deltas['SOLUSDT']:+.2f}$",
+      "◎ SOL-USD",
+      f"${live_prices['SOL-USD']:,.2f}",
+      f"{deltas['SOL-USD']:+.2f}$",
   )
   c4.metric(
       "🏦 Tài sản ($100)",
@@ -370,7 +366,7 @@ def live_crypto_panel():
         f"🔥 {best_keo['coin']} ({best_keo['tf']}): {'LONG' if best_keo['sig']==1 else 'SHORT'} ({best_keo['conf']:.1f}%)"
     )
   else:
-    c5.warning("📡 LIVE SCAN 1s...")
+    c5.warning("📡 LIVE SCAN...")
 
   if pos:
     p1, p2, p3, p4, p5 = st.columns(5)
@@ -403,7 +399,7 @@ def live_crypto_panel():
 
   if scan_list:
     st.caption(
-        "📡 **Radar quét Crypto đa khung thời gian (Dữ liệu Binance Spot):**"
+        "📡 **Radar quét Crypto đa khung thời gian (Sàn Coinbase Mỹ):**"
     )
     st.dataframe(
         pd.DataFrame(scan_list), use_container_width=True, hide_index=True
@@ -422,7 +418,7 @@ def live_crypto_panel():
 def chart_panel():
   acc = load_acc()
   pos = acc["pos"]
-  d_coin = pos["coin"] if pos else chart_coin
+  d_coin = pos["coin"] if (pos and pos["coin"] in ALL_COINS) else chart_coin
   d_tf = pos["tf"] if pos else chart_tf
   recent, _, _ = analyze_crypto(d_coin, d_tf)
 
@@ -460,7 +456,7 @@ def chart_panel():
       height=420,
       xaxis_rangeslider_visible=False,
       template="plotly_dark",
-      title=f"₿ Biểu Đồ Binance {d_coin} - Khung {d_tf}",
+      title=f"₿ Biểu Đồ Coinbase {d_coin} - Khung {d_tf}",
   )
   st.plotly_chart(fig, use_container_width=True)
 
